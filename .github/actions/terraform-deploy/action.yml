@@ -1,0 +1,146 @@
+name: Terraform plan, tag gate and apply
+description: >
+  Plans infra/service for one environment with GitHub OIDC, blocks the run if
+  any resource is missing required tags, then applies the exact reviewed plan.
+
+inputs:
+  environment:
+    description: staging or production
+    required: true
+  image:
+    description: Image reference pinned by digest
+    required: true
+  registry-server:
+    description: ACR login server
+    required: true
+  git-sha:
+    description: Commit being deployed
+    required: true
+  client-id:
+    description: Client ID of the OIDC identity for this environment
+    required: true
+  tenant-id:
+    required: true
+  subscription-id:
+    required: true
+  tfstate-resource-group:
+    required: true
+  tfstate-storage-account:
+    required: true
+  tfstate-container:
+    required: true
+  service-name:
+    required: true
+  terraform-directory:
+    required: false
+    default: infra/service
+  terraform-version:
+    required: false
+    default: "1.16.6"
+  required-tags:
+    required: false
+    default: owner,cost-center,environment,service,data-classification
+  allowed-values:
+    required: false
+    default: |
+      environment=staging|production
+      data-classification=public|internal|confidential
+  apply:
+    description: Apply the plan after the tag gate passes ("false" for plan-only)
+    required: false
+    default: "true"
+  lock:
+    description: Take the state lock (plan-only runs with read-only access use "false")
+    required: false
+    default: "true"
+
+outputs:
+  url:
+    description: Public URL of the service after apply
+    value: ${{ steps.outputs.outputs.url }}
+  has-changes:
+    description: Whether the plan contained changes
+    value: ${{ steps.plan.outputs.has-changes }}
+  tag-check-summary:
+    description: JSON report from the require-tags check
+    value: ${{ steps.tags.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+
+    - name: Terraform init (OIDC to state storage)
+      shell: bash
+      working-directory: ${{ inputs.terraform-directory }}
+      env:
+        ARM_USE_OIDC: "true"
+        ARM_CLIENT_ID: ${{ inputs.client-id }}
+        ARM_TENANT_ID: ${{ inputs.tenant-id }}
+        ARM_SUBSCRIPTION_ID: ${{ inputs.subscription-id }}
+      run: |
+        terraform init -input=false -no-color \
+          -backend-config="resource_group_name=${{ inputs.tfstate-resource-group }}" \
+          -backend-config="storage_account_name=${{ inputs.tfstate-storage-account }}" \
+          -backend-config="container_name=${{ inputs.tfstate-container }}" \
+          -backend-config="key=${{ inputs.service-name }}/${{ inputs.environment }}.tfstate"
+
+    - name: Terraform plan
+      id: plan
+      shell: bash
+      working-directory: ${{ inputs.terraform-directory }}
+      env:
+        ARM_USE_OIDC: "true"
+        ARM_CLIENT_ID: ${{ inputs.client-id }}
+        ARM_TENANT_ID: ${{ inputs.tenant-id }}
+        ARM_SUBSCRIPTION_ID: ${{ inputs.subscription-id }}
+        TF_VAR_environment: ${{ inputs.environment }}
+        TF_VAR_image: ${{ inputs.image }}
+        TF_VAR_registry_server: ${{ inputs.registry-server }}
+        TF_VAR_git_sha: ${{ inputs.git-sha }}
+        TF_VAR_repository: ${{ github.repository }}
+      run: |
+        set +e
+        terraform plan -input=false -no-color -detailed-exitcode \
+          -lock=${{ inputs.lock }} -out=tfplan
+        code=$?
+        set -e
+        if [ "$code" -eq 1 ]; then exit 1; fi
+        echo "has-changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        terraform show -json tfplan > tfplan.json
+        terraform show -no-color tfplan > tfplan.txt
+
+    - name: Gate - require tags on every Azure resource
+      id: tags
+      uses: ./actions/require-tags
+      with:
+        plan-json: ${{ inputs.terraform-directory }}/tfplan.json
+        required-tags: ${{ inputs.required-tags }}
+        allowed-values: ${{ inputs.allowed-values }}
+
+    - name: Terraform apply (exact plan that passed the gate)
+      if: inputs.apply == 'true' && steps.plan.outputs.has-changes == 'true'
+      shell: bash
+      working-directory: ${{ inputs.terraform-directory }}
+      env:
+        ARM_USE_OIDC: "true"
+        ARM_CLIENT_ID: ${{ inputs.client-id }}
+        ARM_TENANT_ID: ${{ inputs.tenant-id }}
+        ARM_SUBSCRIPTION_ID: ${{ inputs.subscription-id }}
+      run: terraform apply -input=false -no-color -auto-approve tfplan
+
+    - name: Read outputs
+      id: outputs
+      if: inputs.apply == 'true'
+      shell: bash
+      working-directory: ${{ inputs.terraform-directory }}
+      env:
+        ARM_USE_OIDC: "true"
+        ARM_CLIENT_ID: ${{ inputs.client-id }}
+        ARM_TENANT_ID: ${{ inputs.tenant-id }}
+        ARM_SUBSCRIPTION_ID: ${{ inputs.subscription-id }}
+      run: echo "url=$(terraform output -raw url)" >> "$GITHUB_OUTPUT"

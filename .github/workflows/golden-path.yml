@@ -1,0 +1,301 @@
+# The golden path: test -> scan -> build once -> staging -> production.
+#
+# Services do not write their own pipeline; they call this workflow (see
+# deploy.yml). Every Azure call uses GitHub OIDC. The image is built and scanned
+# once, pushed by digest, and the same digest is promoted to production.
+name: Golden path
+
+on:
+  workflow_call:
+    inputs:
+      app-directory:
+        description: Folder with the Dockerfile, requirements and tests
+        type: string
+        default: app
+      terraform-directory:
+        type: string
+        default: infra/service
+      manifest:
+        type: string
+        default: golden-path.yaml
+      python-version:
+        type: string
+        default: "3.13"
+      deploy-production:
+        description: Promote to production after staging passes
+        type: boolean
+        default: true
+      fail-on-severity:
+        description: Trivy severities that block the build
+        type: string
+        default: CRITICAL,HIGH
+    outputs:
+      staging-url:
+        value: ${{ jobs.staging.outputs.url }}
+      production-url:
+        value: ${{ jobs.production.outputs.url }}
+
+permissions:
+  contents: read
+
+env:
+  FORCE_COLOR: "1"
+  # Path-scoped, justified exceptions; read by every Trivy step.
+  TRIVY_IGNOREFILE: .trivyignore.yaml
+
+jobs:
+  prepare:
+    name: Read service manifest
+    runs-on: ubuntu-latest
+    outputs:
+      service: ${{ steps.manifest.outputs.service }}
+      started-at: ${{ steps.manifest.outputs.started-at }}
+      image-repo: ${{ steps.manifest.outputs.image-repo }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check configuration and read manifest
+        id: manifest
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+          ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_BUILD_CLIENT_ID: ${{ vars.AZURE_BUILD_CLIENT_ID }}
+          TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+        run: |
+          missing=()
+          for v in ACR_LOGIN_SERVER AZURE_TENANT_ID AZURE_BUILD_CLIENT_ID TFSTATE_STORAGE_ACCOUNT; do
+            [ -n "${!v}" ] || missing+=("$v")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error title=Golden path not configured::Missing repository variables: ${missing[*]}. Run infra/bootstrap and scripts/configure-github.sh (see docs/getting-started.md)."
+            exit 1
+          fi
+          service=$(yq -r '.service.name' "$MANIFEST")
+          {
+            echo "service=$service"
+            echo "image-repo=$ACR_LOGIN_SERVER/$service"
+            echo "started-at=$(date +%s)"
+          } >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Lint and unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.app-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.app-directory }}/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest --cov --cov-report=term-missing --junitxml=junit.xml
+
+  scan-source:
+    name: Scan code, dependencies and IaC
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Trivy - vulnerabilities, secrets and misconfigurations (report)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy-source.sarif
+      - name: Upload results to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: trivy-source.sarif
+          category: trivy-source
+      - name: Trivy - fail on blocking findings
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: ${{ inputs.fail-on-severity }}
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-setup-trivy: true
+
+  build:
+    name: Build, scan and push image
+    needs: [prepare, test, scan-source]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write        # OIDC login to Azure as the build identity
+      security-events: write
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    env:
+      IMAGE: ${{ needs.prepare.outputs.image-repo }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build image
+        env:
+          APP_DIR: ${{ inputs.app-directory }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          docker build --pull \
+            --build-arg "GIT_SHA=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=$SOURCE_URL" \
+            -t "$IMAGE" "$APP_DIR"
+      - name: Trivy - image scan (report)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}
+          format: sarif
+          output: trivy-image.sarif
+      - name: Upload image results to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+      - name: Trivy - block on fixable high and critical CVEs
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}
+          severity: ${{ inputs.fail-on-severity }}
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-setup-trivy: true
+      - name: Azure login (OIDC, build identity)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_BUILD_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Push and resolve digest
+        id: push
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          az acr login --name "$ACR_NAME"
+          docker push "$IMAGE"
+          digest_ref=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE")
+          echo "image=$digest_ref" >> "$GITHUB_OUTPUT"
+          echo "### Image" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$digest_ref\`" >> "$GITHUB_STEP_SUMMARY"
+
+  staging:
+    name: Deploy to staging
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.url }}
+    concurrency:
+      group: deploy-${{ github.repository }}-staging
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Plan, tag gate, apply
+        id: deploy
+        uses: ./.github/actions/terraform-deploy
+        with:
+          environment: staging
+          image: ${{ needs.build.outputs.image }}
+          registry-server: ${{ vars.ACR_LOGIN_SERVER }}
+          git-sha: ${{ github.sha }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          tfstate-resource-group: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          tfstate-storage-account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          tfstate-container: ${{ vars.TFSTATE_CONTAINER }}
+          service-name: ${{ needs.prepare.outputs.service }}
+          terraform-directory: ${{ inputs.terraform-directory }}
+      - name: Smoke test
+        uses: ./.github/actions/smoke-test
+        with:
+          url: ${{ steps.deploy.outputs.url }}
+          git-sha: ${{ github.sha }}
+      - name: Record time to running
+        env:
+          STARTED_AT: ${{ needs.prepare.outputs.started-at }}
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          elapsed=$(( $(date +%s) - STARTED_AT ))
+          printf '### Staging is live\n\n%s\n\nCommit to running in staging: **%dm %02ds**\n' \
+            "$URL" $((elapsed / 60)) $((elapsed % 60)) >> "$GITHUB_STEP_SUMMARY"
+
+  production:
+    name: Deploy to production
+    if: inputs.deploy-production
+    needs: [prepare, build, staging]
+    runs-on: ubuntu-latest
+    # Required reviewers and a main-only branch policy are set on this
+    # environment by scripts/configure-github.sh, so this job waits for approval.
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    concurrency:
+      group: deploy-${{ github.repository }}-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Plan, tag gate, apply (same image digest as staging)
+        id: deploy
+        uses: ./.github/actions/terraform-deploy
+        with:
+          environment: production
+          image: ${{ needs.build.outputs.image }}
+          registry-server: ${{ vars.ACR_LOGIN_SERVER }}
+          git-sha: ${{ github.sha }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          tfstate-resource-group: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+          tfstate-storage-account: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+          tfstate-container: ${{ vars.TFSTATE_CONTAINER }}
+          service-name: ${{ needs.prepare.outputs.service }}
+          terraform-directory: ${{ inputs.terraform-directory }}
+      - name: Smoke test
+        uses: ./.github/actions/smoke-test
+        with:
+          url: ${{ steps.deploy.outputs.url }}
+          git-sha: ${{ github.sha }}
+      - name: Record time to production
+        env:
+          STARTED_AT: ${{ needs.prepare.outputs.started-at }}
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          elapsed=$(( $(date +%s) - STARTED_AT ))
+          printf '### Production is live\n\n%s\n\nCommit to running in production (includes approval wait): **%dm %02ds**\n' \
+            "$URL" $((elapsed / 60)) $((elapsed % 60)) >> "$GITHUB_STEP_SUMMARY"

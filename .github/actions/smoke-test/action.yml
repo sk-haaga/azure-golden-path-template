@@ -1,0 +1,53 @@
+name: Smoke test a deployed revision
+description: >
+  Waits until the service reports the expected commit at /version, then checks
+  health and one real API call. Fails the job if the new revision never goes live.
+
+inputs:
+  url:
+    description: Base URL of the service
+    required: true
+  git-sha:
+    description: Commit the new revision must report
+    required: true
+  timeout-seconds:
+    required: false
+    default: "300"
+  extra-checks:
+    description: Optional script with service-specific checks; receives BASE_URL
+    required: false
+    default: app/tests/smoke.sh
+
+runs:
+  using: composite
+  steps:
+    - name: Wait for the new revision and check it
+      shell: bash
+      env:
+        BASE_URL: ${{ inputs.url }}
+        EXPECTED_SHA: ${{ inputs.git-sha }}
+        TIMEOUT: ${{ inputs.timeout-seconds }}
+        EXTRA_CHECKS: ${{ inputs.extra-checks }}
+      run: |
+        set -euo pipefail
+        deadline=$(( $(date +%s) + TIMEOUT ))
+        echo "Waiting for $BASE_URL to serve $EXPECTED_SHA"
+        until body=$(curl -fsS --max-time 10 "$BASE_URL/version" 2>/dev/null) \
+              && [ "$(jq -r .git_sha <<<"$body")" = "$EXPECTED_SHA" ]; do
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "::error title=Smoke test::$BASE_URL did not serve $EXPECTED_SHA within ${TIMEOUT}s"
+            exit 1
+          fi
+          sleep 10
+        done
+        echo "Live revision: $body"
+
+        test "$(curl -fsS --max-time 10 "$BASE_URL/healthz" | jq -r .status)" = "ok"
+        test "$(curl -fsS --max-time 10 "$BASE_URL/readyz" | jq -r .status)" = "ready"
+
+        if [ -f "$EXTRA_CHECKS" ]; then
+          echo "Running service-specific checks from $EXTRA_CHECKS"
+          BASE_URL="$BASE_URL" bash "$EXTRA_CHECKS"
+        fi
+
+        echo "Smoke test passed for $BASE_URL"

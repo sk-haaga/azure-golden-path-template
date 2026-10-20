@@ -1,0 +1,90 @@
+# Runs the Vulnerability Remediation Agent against this repository.
+#
+# The agent scans the code and image, proposes the smallest safe upgrade for
+# each vulnerable dependency, runs the tests, and opens a pull request only if
+# they pass; otherwise it opens an issue for a person. It never merges: main is
+# protected and needs a human review (scripts/configure-github.sh sets that up).
+#
+# Azure OpenAI is reached with a short-lived Entra ID token obtained through
+# GitHub OIDC, so no API key is stored anywhere.
+name: Vulnerability remediation
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"   # Mondays 05:17 UTC
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Report only, do not open pull requests or issues
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: remediation-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  remediate:
+    name: Find and fix vulnerable dependencies
+    if: vars.REMEDIATION_AGENT_IMAGE != ''
+    runs-on: ubuntu-latest
+    environment: remediation
+    timeout-minutes: 45
+    permissions:
+      contents: write        # push the fix branch
+      pull-requests: write   # open the PR (merging is blocked by branch protection)
+      issues: write          # escalate what it cannot fix safely
+      packages: read         # pull the agent image from GHCR
+      id-token: write        # OIDC to Azure for the Azure OpenAI token
+    env:
+      AGENT_IMAGE: ${{ vars.REMEDIATION_AGENT_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Azure login (OIDC, remediation identity)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get a short-lived Azure OpenAI token
+        id: aoai
+        run: |
+          token=$(az account get-access-token \
+            --resource https://cognitiveservices.azure.com \
+            --query accessToken -o tsv)
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      - name: Pull the agent image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker pull "$AGENT_IMAGE"
+
+      # The agent's CLI is defined in its own repository. REMEDIATION_AGENT_ARGS
+      # lets you match it without editing this file.
+      - name: Run the agent
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AZURE_OPENAI_AD_TOKEN: ${{ steps.aoai.outputs.token }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
+          AGENT_ARGS: ${{ vars.REMEDIATION_AGENT_ARGS || '--repo /workspace --test-command "pip install -r app/requirements-dev.txt && cd app && pytest -q" --dockerfile app/Dockerfile' }}
+          DRY_RUN: ${{ inputs.dry-run && '--dry-run' || '' }}
+        run: |
+          eval "set -- $AGENT_ARGS $DRY_RUN"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -e GITHUB_TOKEN -e GITHUB_REPOSITORY -e GITHUB_SERVER_URL \
+            -e AZURE_OPENAI_AD_TOKEN -e AZURE_OPENAI_ENDPOINT -e AZURE_OPENAI_DEPLOYMENT \
+            -e GITHUB_STEP_SUMMARY=/workspace/.agent-summary.md \
+            "$AGENT_IMAGE" "$@"
+          if [ -f .agent-summary.md ]; then cat .agent-summary.md >> "$GITHUB_STEP_SUMMARY"; fi

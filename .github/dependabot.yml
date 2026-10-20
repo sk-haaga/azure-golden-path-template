@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }
+
+  - package-ecosystem: pip
+    directories: [/app, /actions/require-tags]
+    schedule: { interval: weekly }
+
+  - package-ecosystem: docker
+    directories: [/app, /actions/require-tags]
+    schedule: { interval: weekly }
+
+  - package-ecosystem: terraform
+    directories: [/infra/bootstrap, /infra/modules/container-app, /infra/service]
+    schedule: { interval: weekly }

@@ -1,0 +1,50 @@
+# Accepted Trivy findings. Each one is scoped to a path and says why.
+# Review these whenever the affected file changes. Anything not listed here
+# that is HIGH or CRITICAL (with a fix available) fails the pipeline.
+
+misconfigurations:
+  - id: DS-0002
+    paths:
+      - actions/require-tags/Dockerfile
+    statement: >
+      GitHub runs Docker container actions as root by design: the mounted
+      workspace and the GITHUB_OUTPUT / GITHUB_STEP_SUMMARY files are owned by
+      the runner user, so a non-root image cannot write step outputs. The
+      container only reads the plan JSON and has no network-facing surface.
+      (The app image does run as non-root, UID 10001.)
+
+  - id: DS-0026
+    paths:
+      - app/Dockerfile
+      - actions/require-tags/Dockerfile
+    statement: >
+      Docker HEALTHCHECK is ignored by Azure Container Apps, which uses the
+      startup, liveness and readiness probes defined in Terraform instead. The
+      tag-check container is a short-lived CLI with nothing to health-check.
+
+  - id: AZU-0012
+    paths:
+      - infra/bootstrap/main.tf
+    statement: >
+      The Terraform state account must be reachable from GitHub-hosted runners,
+      whose IP ranges are not fixed. Exposure is limited instead by identity:
+      shared keys are disabled (Entra ID only), public blob access is off, and
+      only the plan/deploy identities have data-plane roles on the one
+      container. With self-hosted runners in a VNet, add a private endpoint and
+      set default_action = "Deny".
+
+  - id: AZU-0057
+    paths:
+      - infra/bootstrap/main.tf
+    statement: >
+      Applies to classic Queue storage logging; this account only holds blobs.
+      Access to state is audited through Entra ID sign-in logs for the
+      pipeline identities.
+
+  - id: AZU-0060
+    paths:
+      - infra/bootstrap/main.tf
+    statement: >
+      Microsoft-managed keys with infrastructure (double) encryption enabled.
+      Customer-managed keys would need a Key Vault and key rotation process,
+      which is out of scope for a starter template.

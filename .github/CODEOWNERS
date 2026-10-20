@@ -1,0 +1,5 @@
+# Platform-owned parts of the golden path need a platform review.
+*                         @sk-haaga
+/.github/                 @sk-haaga
+/actions/                 @sk-haaga
+/infra/                   @sk-haaga

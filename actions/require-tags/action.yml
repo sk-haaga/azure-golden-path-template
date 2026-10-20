@@ -1,0 +1,82 @@
+name: Require Azure resource tags
+description: >
+  Blocks a deployment when any Azure resource in a Terraform plan is missing
+  required tags or uses a tag value that is not allowed.
+author: sk-haaga
+branding:
+  icon: tag
+  color: blue
+
+inputs:
+  plan-json:
+    description: Path to the output of `terraform show -json <planfile>`, relative to the workspace.
+    required: true
+  required-tags:
+    description: Comma- or newline-separated tag names every taggable resource must carry.
+    required: false
+    default: owner,cost-center,environment,service,data-classification
+  allowed-values:
+    description: |
+      Optional value rules, one per line, as key=value1|value2.
+      Example: environment=staging|production
+    required: false
+    default: ""
+  ignore-resource-types:
+    description: Resource types to skip, comma- or newline-separated.
+    required: false
+    default: ""
+  ignore-addresses:
+    description: Resource address glob patterns to skip, e.g. module.legacy.*
+    required: false
+    default: ""
+  actions:
+    description: Plan actions to check. Add `no-op` to also check unchanged resources.
+    required: false
+    default: create,update
+  tag-attribute:
+    description: Name of the tags attribute in the provider schema.
+    required: false
+    default: tags
+  fail-on-unknown:
+    description: Treat tags that are only known after apply as violations instead of warnings.
+    required: false
+    default: "false"
+  report-path:
+    description: Optional path to write a JSON report to.
+    required: false
+    default: ""
+
+outputs:
+  passed:
+    description: "true when no violations were found"
+  violations:
+    description: Number of violations
+  warnings:
+    description: Number of tags that could not be verified at plan time
+  checked:
+    description: Number of resources checked
+  report:
+    description: JSON report of the check
+
+runs:
+  using: docker
+  image: Dockerfile
+  args:
+    - --plan-json
+    - ${{ inputs.plan-json }}
+    - --required-tags
+    - ${{ inputs.required-tags }}
+    - --allowed-values
+    - ${{ inputs.allowed-values }}
+    - --ignore-resource-types
+    - ${{ inputs.ignore-resource-types }}
+    - --ignore-addresses
+    - ${{ inputs.ignore-addresses }}
+    - --actions
+    - ${{ inputs.actions }}
+    - --tag-attribute
+    - ${{ inputs.tag-attribute }}
+    - --fail-on-unknown
+    - ${{ inputs.fail-on-unknown }}
+    - --report-path
+    - ${{ inputs.report-path }}

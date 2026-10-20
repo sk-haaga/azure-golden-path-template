@@ -1,0 +1,89 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
+  "resource_changes": [
+    {
+      "address": "module.service.azurerm_container_app_environment.this",
+      "mode": "managed",
+      "type": "azurerm_container_app_environment",
+      "name": "this",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "cae-sample-api-staging",
+          "tags": {
+            "owner": "platform-team",
+            "environment": "dev",
+            "service": "sample-api",
+            "data-classification": ""
+          }
+        },
+        "after_unknown": {"id": true, "tags": {}}
+      }
+    },
+    {
+      "address": "azurerm_key_vault.shadow",
+      "mode": "managed",
+      "type": "azurerm_key_vault",
+      "name": "shadow",
+      "change": {
+        "actions": ["create"],
+        "after": {"name": "kv-shadow", "tags": null},
+        "after_unknown": {"id": true}
+      }
+    },
+    {
+      "address": "module.service.azurerm_container_app.this",
+      "mode": "managed",
+      "type": "azurerm_container_app",
+      "name": "this",
+      "change": {
+        "actions": ["delete", "create"],
+        "after": {
+          "name": "ca-sample-api-staging",
+          "tags": {
+            "owner": "platform-team",
+            "cost-center": "CC-1001",
+            "environment": "staging",
+            "service": "sample-api"
+          }
+        },
+        "after_unknown": {"tags": {"data-classification": true}}
+      }
+    },
+    {
+      "address": "azurerm_storage_account.computed",
+      "mode": "managed",
+      "type": "azurerm_storage_account",
+      "name": "computed",
+      "change": {
+        "actions": ["create"],
+        "after": {"name": "stcomputed"},
+        "after_unknown": {"id": true, "tags": true}
+      }
+    },
+    {
+      "address": "module.legacy.azurerm_resource_group.this",
+      "mode": "managed",
+      "type": "azurerm_resource_group",
+      "name": "this",
+      "change": {
+        "actions": ["create"],
+        "after": {"name": "rg-legacy", "tags": {}},
+        "after_unknown": {"id": true}
+      }
+    },
+    {
+      "address": "azurerm_public_ip.unchanged",
+      "mode": "managed",
+      "type": "azurerm_public_ip",
+      "name": "unchanged",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"tags": {}},
+        "after": {"name": "pip", "tags": {}},
+        "after_unknown": {}
+      }
+    }
+  ]
+}

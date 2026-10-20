@@ -1,0 +1,74 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
+  "resource_changes": [
+    {
+      "address": "module.service.azurerm_log_analytics_workspace.this",
+      "module_address": "module.service",
+      "mode": "managed",
+      "type": "azurerm_log_analytics_workspace",
+      "name": "this",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "log-sample-api-staging",
+          "tags": {
+            "owner": "platform-team",
+            "cost-center": "CC-1001",
+            "environment": "staging",
+            "service": "sample-api",
+            "data-classification": "internal",
+            "managed-by": "terraform"
+          }
+        },
+        "after_unknown": {"id": true, "tags": {}}
+      }
+    },
+    {
+      "address": "module.service.azurerm_container_app.this",
+      "module_address": "module.service",
+      "mode": "managed",
+      "type": "azurerm_container_app",
+      "name": "this",
+      "change": {
+        "actions": ["update"],
+        "after": {
+          "name": "ca-sample-api-staging",
+          "tags": {
+            "Owner": "platform-team",
+            "Cost-Center": "CC-1001",
+            "Environment": "staging",
+            "Service": "sample-api",
+            "Data-Classification": "internal"
+          }
+        },
+        "after_unknown": {"latest_revision_fqdn": true}
+      }
+    },
+    {
+      "address": "azurerm_role_assignment.acr_pull",
+      "mode": "managed",
+      "type": "azurerm_role_assignment",
+      "name": "acr_pull",
+      "change": {
+        "actions": ["create"],
+        "after": {"role_definition_name": "AcrPull"},
+        "after_unknown": {"id": true, "principal_id": true}
+      }
+    },
+    {
+      "address": "data.azurerm_resource_group.this",
+      "mode": "data",
+      "type": "azurerm_resource_group",
+      "name": "this",
+      "change": {"actions": ["read"], "after": {"tags": null}, "after_unknown": {}}
+    },
+    {
+      "address": "azurerm_storage_account.old",
+      "mode": "managed",
+      "type": "azurerm_storage_account",
+      "name": "old",
+      "change": {"actions": ["delete"], "before": {"tags": {}}, "after": null, "after_unknown": {}}
+    }
+  ]
+}

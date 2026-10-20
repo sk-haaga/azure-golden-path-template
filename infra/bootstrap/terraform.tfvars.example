@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is git-ignored.
+subscription_id = "00000000-0000-0000-0000-000000000000"
+github_owner    = "sk-haaga"
+github_repo     = "azure-golden-path-template"
+location        = "swedencentral"
+
+# Optional: lets the Vulnerability Remediation Agent call Azure OpenAI via OIDC.
+# remediation_openai_account_id = "/subscriptions/.../resourceGroups/.../providers/Microsoft.CognitiveServices/accounts/..."

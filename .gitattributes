@@ -1,0 +1,6 @@
+# Keep LF line endings in the repository so shell scripts, Dockerfiles and
+# workflows run correctly on Linux runners, even when committed from Windows.
+* text=auto eol=lf
+*.sh text eol=lf
+*.png binary
+*.zip binary

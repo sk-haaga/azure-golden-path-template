@@ -1,0 +1,25 @@
+# This is the whole pipeline a service team owns: one call to the golden path.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  golden-path:
+    uses: ./.github/workflows/golden-path.yml
+    with:
+      deploy-production: true

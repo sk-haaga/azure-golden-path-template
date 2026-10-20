@@ -1,0 +1,19 @@
+[project]
+name = "require-tags"
+version = "1.0.0"
+description = "GitHub Action that blocks Terraform plans with missing Azure tags"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]

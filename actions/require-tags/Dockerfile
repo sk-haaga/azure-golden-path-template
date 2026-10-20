@@ -1,7 +1,7 @@
 # The checker only uses the Python standard library, so the image is a plain
 # Alpine Python base with the source copied in: small, fast to build on each
 # workflow run, and nothing extra for Trivy to flag.
-FROM python:3.13-alpine
+FROM python:3.14-alpine
 
 RUN apk upgrade --no-cache \
     && adduser -D -u 10001 checker

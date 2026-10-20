@@ -1,0 +1,28 @@
+# golden-path.yaml: the only file a team has to edit to ship a new service.
+#
+# Terraform reads it for names, sizing and tags, and the pipeline reads it for
+# the service name. Every value under `service` becomes a required Azure tag,
+# and the require-tags check blocks the deployment if any are missing.
+
+service:
+  name: sample-api              # lowercase letters, digits and hyphens, 3-20 chars
+  owner: platform-team          # team or person accountable for the service
+  cost_center: CC-1001          # finance code the Azure spend is charged to
+  data_classification: internal # public | internal | confidential
+
+runtime:
+  port: 8000
+  cpu: 0.25                     # vCPU per replica
+  memory: 0.5Gi                 # must pair with cpu (0.25 -> 0.5Gi, 0.5 -> 1Gi, ...)
+  liveness_path: /healthz
+  readiness_path: /readyz
+  env:                          # plain, non-secret settings passed to the container
+    LOG_LEVEL: INFO
+
+environments:
+  staging:
+    min_replicas: 0             # scale to zero when idle
+    max_replicas: 2
+  production:
+    min_replicas: 1             # always one warm replica
+    max_replicas: 5
